@@ -5,7 +5,6 @@ import os
 import appdirs
 import pathlib
 import configparser
-import argparse
 import random
 import string
 import time
@@ -13,9 +12,11 @@ import datetime
 import dateutil
 import pytz
 import copy
+import scripthelper
 from os.path import exists
 from contacts import Contacts
 
+logger = scripthelper.getLogger(__name__)
 
 all_sync_tags = set([])
 
@@ -45,11 +46,6 @@ def duplicates(ls: list):
     return dups
 
 
-def vprint(*a, **vargs):
-    if args.verbose:
-        print(*a, **vargs)
-
-
 def load_config(cfile):
     """Return the config, or make a default one.
 
@@ -65,7 +61,7 @@ def load_config(cfile):
         otherwise just exit
 
     """
-    vprint(f"loaded {cfile}")
+    logger.verbose(f"loaded {cfile}")
     # put in default config file if necessary
     if not cfile.exists():
         cp = configparser.ConfigParser()
@@ -82,13 +78,13 @@ def load_config(cfile):
         with open(cfile, 'w') as cfh:
             cp.write(cfh)
 
-        print(f"Made config file {cfile}, you must edit it")
+        logger.warning(f"Made config file {cfile}, you must edit it")
         sys.exit(1)
 
     cp = configparser.ConfigParser()
     cp.read(cfile)
     if 'account-FIXME' in cp.sections():
-        print(f"You must edit {cfile}.  There is an account-FIXME section")
+        logger.critical(f"You must edit {cfile}.  There is an account-FIXME section")
         sys.exit(2)
 
     return cp
@@ -114,9 +110,7 @@ def remove_prefix(text, prefix):
     return text  # or whatever
 
 
-# parse command line
-p = argparse.ArgumentParser(
-    description="""
+scripthelper.parser.description = """
 Sync google contacts.
 
 If you have previously used github.com/michael-adler/sync-google-contacts which
@@ -129,26 +123,19 @@ phase, again you will be prompted.
 
 For full instructions see
 https://github.com/mrmattwilkins/google-contacts-sync
-    """,
-    epilog="""""",
-    formatter_class=argparse.ArgumentDefaultsHelpFormatter
-)
-p.add_argument(
+"""
+scripthelper.add_argument(
     '--init', action='store_true',
     help="Initialize by syncing using names"
 )
-p.add_argument(
+scripthelper.add_argument(
     '--rlim', type=int,
     help="If --init, wait this many seconds between each sync"
 )
-p.add_argument(
-    '-v', '--verbose', action='store_true',
-    help="Verbose output"
-)
-args = p.parse_args()
+args = scripthelper.initialize()
 
 # get the configuration file
-vprint('Loading configuration')
+logger.verbose('Loading configuration')
 if exists("PORTABLE.md"):
     cdir = pathlib.Path(
         "conf"
@@ -163,28 +150,26 @@ cfile = cdir / 'config.ini'
 cp = load_config(cfile)
 
 # get the contacts for each user
-vprint('Getting contacts')
+logger.verbose('Getting contacts')
 con = {
     cp[s]['user']: Contacts(
-        cp[s]['keyfile'], cp[s]['credfile'], cp[s]['user'], args.verbose
+        cp[s]['keyfile'], cp[s]['credfile'], cp[s]['user']
     )
     for s in cp.sections()
 }
 
 if args.init:
-    print("Setting up syncing using names to identify identical contacts")
+    logger.info("Setting up syncing using names to identify identical contacts")
 
     # get all the names to see if there are duplicates
     for email, acc in con.items():
         dups = duplicates([i['name'] for i in acc.info.values()])
         if dups:
-            print('')
-            print(
+            logger.info(
                 f"These contacts ({','.join(dups)}) are duplicated in account "
                 f"{email}. I will not continue, this will cause confusion"
             )
-            print('')
-            print("Please remove your duplicates and try again")
+            logger.error("Please remove your duplicates and try again")
             sys.exit(1)
 
     # keep track of who we have synced so we don't redo them on next account
@@ -207,7 +192,7 @@ if args.init:
                     rn = otheracc.name_to_rn(p['name'])
                     if rn:
                         otheracc.update_tag(rn, p['tag'])
-                        otheracc.update(p['tag'], newcontact, args.verbose)
+                        otheracc.update(p['tag'], newcontact)
                     else:
                         otheracc.add(newcontact)
                 done.add(p['name'])
@@ -216,23 +201,20 @@ if args.init:
                 if args.rlim and args.rlim > 0:
                     time.sleep(args.rlim)
 
-            print(
+            logger.info(
                 f"Pushing {email} (tot {len(acc.info)}): "
-                f"synced {nsync}, done before {ndone}",
-                end='\r',
-                flush=True
+                f"synced {nsync}, done before {ndone}"
             )
-        print('')
 
     # update the last updated field
     save_config(cp, cfile)
     sys.exit(0)
 
 # if an account has no sync tags, the user needs to do a --init
-vprint('Checking no new accounts')
+logger.verbose('Checking no new accounts')
 for email, acc in con.items():
     if all([v['tag'] is None for v in acc.info.values()]):
-        print(
+        logger.critical(
             f'{email} has no sync tags.  It looks like this is the first time '
             'running this script for this account.  You need to pass --init '
             'for me to assign the sync tag to each contact'
@@ -242,7 +224,7 @@ for email, acc in con.items():
 # ======================================
 # Sync ContactGroup
 # ======================================
-vprint("ContactGroups synchronization...")
+logger.verbose("ContactGroups synchronization...")
 all_sync_tags_ContactGroups = set([])
 for email, acc in con.items():
     all_sync_tags_ContactGroups.update([
@@ -251,7 +233,7 @@ for email, acc in con.items():
 
 
 # deletions are detected by missing tags, store the tags to delete in here
-vprint('ContactGroups - Checking what to delete')
+logger.verbose('ContactGroups - Checking what to delete')
 todel = set([])
 for email, acc in con.items():
     # tags in acc
@@ -261,14 +243,13 @@ for email, acc in con.items():
     )
     rm = all_sync_tags_ContactGroups - tags
     if rm:
-        print(f'{email}: {len(rm)} ContactGroup(s) deleted')
+        logger.info(f'{email}: {len(rm)} ContactGroup(s) deleted')
     todel.update(rm)
 if todel:
     for email, acc in con.items():
-        print(f'removing ContactGroups from {email}: ', end='')
+        logger.info(f'removing ContactGroups from {email}: ')
         for tag in todel:
             acc.delete_contactGroup(tag)
-        vprint('')
 
 
 # if there was anything deleted, get all contact info again (so those removed
@@ -279,7 +260,7 @@ if todel:
 
 
 # new group won't have a tag
-vprint('ContactGroups - Checking for new ContactGroup')
+logger.verbose('ContactGroups - Checking for new ContactGroup')
 added = []
 for email, acc in con.items():
     # maps tag to (rn, name)
@@ -288,7 +269,7 @@ for email, acc in con.items():
         for rn, v in acc.info_group.items() if v['tag'] is None
     ]
     if toadd:
-        vprint(f'{email}: these are new {list(i[1] for i in toadd)}')
+        logger.verbose(f'{email}: these are new {list(i[1] for i in toadd)}')
     for rn, name in toadd:
 
         # assign a new tag to this ContactGroup
@@ -303,7 +284,7 @@ for email, acc in con.items():
         for otheremail, other in con.items():
             if other == acc:
                 continue
-            vprint(f'adding {name} to {otheremail}')
+            logger.verbose(f'adding {name} to {otheremail}')
 
             tmp = {
                 "contactGroup": {
@@ -330,24 +311,23 @@ for email, acc in con.items():
     for t, rn, u in tru:
         t2aru.setdefault(t, []).append((acc, rn, u))
 
-vprint(f"ContactGroups - There are {len(t2aru)} contactGroups to update")
+logger.verbose(f"ContactGroups - There are {len(t2aru)} contactGroups to update")
 for tag, val in t2aru.items():
     # find the account with most recent update
     newest = max(val, key=lambda x: x[2])
     acc, rn = newest[:2]
-    vprint(f"{acc.info_group[rn]['name']}: ", end='')
+    logger.verbose(f"{acc.info_group[rn]['name']}: ")
     contactGroup = acc.get_contactGroup(rn)
     for otheremail, otheracc in con.items():
         if otheracc == acc:
             continue
-        vprint(f"{otheremail} ", end='')
+        logger.verbose(f"- {otheremail} ")
         otheracc.update_contactGroup(tag, contactGroup)
-    vprint('')
 
 # ======================================
 # Sync Contact
 # ======================================
-vprint("Contacts synchronization...")
+logger.verbose("Contacts synchronization...")
 # we need a full set of tags so we can detect changes.  ignore those that don't
 # have a tag yet, they will be additions
 for email, acc in con.items():
@@ -356,21 +336,20 @@ for email, acc in con.items():
     ])
 
 # deletions are detected by missing tags, store the tags to delete in here
-vprint('Checking what to delete')
+logger.verbose('Checking what to delete')
 todel = set([])
 for email, acc in con.items():
     # tags in acc
     tags = set(v['tag'] for v in acc.info.values() if v['tag'] is not None)
     rm = all_sync_tags - tags
     if rm:
-        vprint(f'{email}: {len(rm)} contact(s) deleted')
+        logger.verbose(f'{email}: {len(rm)} contact(s) deleted')
     todel.update(rm)
 if todel:
     for email, acc in con.items():
-        vprint(f'removing contacts from {email}: ', end='')
+        logger.verbose(f'removing contacts from {email}: ')
         for tag in todel:
-            acc.delete(tag, verbose=args.verbose)
-        vprint('')
+            acc.delete(tag)
 
 # if there was anything deleted, get all contact info again (so those removed
 # are gone from our cached lists)
@@ -379,7 +358,7 @@ if todel:
         acc.get_info()
 
 # new people won't have a tag
-vprint('Checking for new people')
+logger.verbose('Checking for new people')
 added = []
 for email, acc in con.items():
     # maps tag to (rn, name)
@@ -388,7 +367,7 @@ for email, acc in con.items():
         for rn, v in acc.info.items() if v['tag'] is None
     ]
     if toadd:
-        vprint(f'{email}: these are new {list(i[1] for i in toadd)}')
+        logger.verbose(f'{email}: these are new {list(i[1] for i in toadd)}')
     for rn, name in toadd:
 
         # assign a new tag to this person
@@ -433,7 +412,7 @@ for email, acc in con.items():
 
             if other == acc:
                 continue
-            vprint(f'adding {name} to {otheremail}')
+            logger.verbose(f'adding {name} to {otheremail}')
 
             # if there are tags to sync
             if len(groupTags) > 0:
@@ -476,12 +455,12 @@ for email, acc in con.items():
     for t, rn, u in tru:
         t2aru.setdefault(t, []).append((acc, rn, u))
 
-vprint(f"There are {len(t2aru)} contacts to update")
+logger.verbose(f"There are {len(t2aru)} contacts to update")
 for tag, val in t2aru.items():
     # find the account with most recent update
     newest = max(val, key=lambda x: x[2])
     acc, rn = newest[:2]
-    vprint(f"{acc.info[rn]['name']}: ", end='')
+    logger.verbose(f"{acc.info[rn]['name']}: ")
     contact = acc.get(rn)
 
     # before sending the update
@@ -510,7 +489,7 @@ for tag, val in t2aru.items():
     for otheremail, otheracc in con.items():
         if otheracc == acc:
             continue
-        vprint(f"{otheremail} ", end='')
+        logger.verbose(f"{otheremail} ")
 
         if len(groupTags) > 0:
             contactCopy = copy.deepcopy(contact)
@@ -528,10 +507,9 @@ for tag, val in t2aru.items():
                     }
                 })
 
-            otheracc.update(tag, contactCopy, verbose=args.verbose)
+            otheracc.update(tag, contactCopy)
         else:
-            otheracc.update(tag, contact, verbose=args.verbose)
-    vprint('')
+            otheracc.update(tag, contact)
 
 # update the last updated field
 save_config(cp, cfile)

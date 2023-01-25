@@ -3,6 +3,7 @@
 import pickle
 import os.path
 import dateutil.parser
+import scripthelper
 
 from time import sleep
 
@@ -10,6 +11,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+
+logger = scripthelper.getLogger(__name__)
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/contacts']
@@ -81,7 +84,7 @@ all_update_person_fields = [
 
 class Contacts():
 
-    def __init__(self, keyfile, credfile, user, verbose):
+    def __init__(self, keyfile, credfile, user):
 
         creds = None
 
@@ -97,8 +100,7 @@ class Contacts():
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
-                if verbose:
-                    print("login into:", user)
+                logger.verbose(f"login into: {user}")
 
                 flow = InstalledAppFlow.from_client_secrets_file(
                     keyfile, SCOPES
@@ -315,7 +317,7 @@ class Contacts():
         assert(len(rn) == 1)
         return rn[0]
 
-    def delete(self, tag: str, verbose=False):
+    def delete(self, tag: str):
         """Delete a person
 
         Parameters
@@ -329,8 +331,7 @@ class Contacts():
         if rn is None:
             return
 
-        if verbose:
-            print(f"{self.info[rn]['name']} ", end='')
+        logger.verbose(f"{self.info[rn]['name']} ")
         self.service.people().deleteContact(resourceName=rn).execute()
 
     def update_tag(self, rn: str, tag: str):
@@ -384,7 +385,7 @@ class Contacts():
         ).execute()
         return new_contact
 
-    def update(self, tag: str, body: dict, verbose=False):
+    def update(self, tag: str, body: dict):
         rn = self.tag_to_rn(tag)
 
         if rn is not None:
@@ -397,10 +398,9 @@ class Contacts():
                 ).execute()
             except HttpError as e:
                 # sleep to avoid 429 HTTP error because rate limit
-                if verbose:
-                    print("[ERROR] ", e)
+                logger.warning(str(e))
                 sleep(1)
-                self.update(tag, body, verbose)
+                self.update(tag, body)
 
     def get(self, rn):
         """Return a person body, stripped of resourceName/etag etc"""
